@@ -551,19 +551,36 @@ impl XState {
                 let prop2 = unsafe { x::Atom::new(data[2]) };
 
                 trace!("_NET_WM_STATE ({action:?}) props: {prop1:?} {prop2:?}");
-
+                println!("_NET_WM_STATE ({action:?}) props: {prop1:?} {prop2:?}");
+                
+                //🤡
+                match prop1{
+                    x if x == self.atoms.wm_maximized_vert => {
+                        match prop2{
+                            y if y == self.atoms.wm_maximized_horz => {
+                                server_state.maximize_window(e.window()); 
+                            },
+                            _ => {}
+                        } 
+                    },
+                    _ => {}
+                }
+                
                 for prop in [prop1, prop2] {
                     match prop {
                         x if x == self.atoms.wm_fullscreen => {
                             server_state.set_fullscreen(e.window(), action);
-                        }
+                        },
                         _ => {}
                     }
                 }
             }
+            x if x == self.atoms.legacy_wm_change_state => {
+                server_state.minimize_window(e.window());
+            },
             x if x == self.atoms.active_win => {
                 server_state.activate_window(e.window());
-            }
+            },
             x if x == self.atoms.moveresize => {
                 let x::ClientMessageData::Data32(data) = e.data() else {
                     unreachable!();
@@ -1015,7 +1032,12 @@ xcb::atoms_struct! {
         net_wm_name => b"_NET_WM_NAME" only_if_exists = false,
         wm_pid => b"_NET_WM_PID" only_if_exists = false,
         net_wm_state => b"_NET_WM_STATE" only_if_exists = false,
+        legacy_wm_change_state => b"WM_CHANGE_STATE" only_if_exists = false,
         wm_fullscreen => b"_NET_WM_STATE_FULLSCREEN" only_if_exists = false,
+
+        wm_maximized_vert => b"_NET_WM_STATE_MAXIMIZED_VERT" only_if_exists = false,
+        wm_maximized_horz => b"_NET_WM_STATE_MAXIMIZED_HORZ" only_if_exists = false,
+
         skip_taskbar => b"_NET_WM_STATE_SKIP_TASKBAR" only_if_exists = false,
         active_win => b"_NET_ACTIVE_WINDOW" only_if_exists = false,
         client_list => b"_NET_CLIENT_LIST" only_if_exists = false,

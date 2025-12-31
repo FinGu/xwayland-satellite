@@ -1125,6 +1125,54 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
         win.attrs.transient_for = Some(parent);
     }
 
+    pub fn maximize_window(&mut self, window: x::Window) {
+        let Some(data) = self
+            .windows
+            .get(&window)
+            .copied()
+            .and_then(|id| self.world.entity(id).ok())
+        else {
+            warn!("Tried to set unknown window {window:?} maximized");
+            return;
+        };
+
+        let Some(role) = data.get::<&SurfaceRole>() else {
+            warn!("Tried to set window without role maximized: {window:?}");
+            return;
+        };
+
+        let SurfaceRole::Toplevel(Some(ref toplevel)) = &*role else {
+            warn!("Tried to set an unmapped toplevel or non toplevel maximized: {window:?}");
+            return;
+        };
+
+        toplevel.toplevel.set_maximized();
+    }
+
+    pub fn minimize_window(&mut self, window: x::Window) {
+        let Some(data) = self
+            .windows
+            .get(&window)
+            .copied()
+            .and_then(|id| self.world.entity(id).ok())
+        else {
+            warn!("Tried to set unknown window {window:?} minimized");
+            return;
+        };
+
+        let Some(role) = data.get::<&SurfaceRole>() else {
+            warn!("Tried to set window without role minimized: {window:?}");
+            return;
+        };
+
+        let SurfaceRole::Toplevel(Some(ref toplevel)) = &*role else {
+            warn!("Tried to set an unmapped toplevel or non toplevel minimized: {window:?}");
+            return;
+        };
+
+        toplevel.toplevel.set_minimized();
+    }
+
     pub fn activate_window(&mut self, window: x::Window) {
         let Some(activation_state) = self.activation_state.as_ref() else {
             return;
