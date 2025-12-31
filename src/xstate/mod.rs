@@ -551,7 +551,6 @@ impl XState {
                 let prop2 = unsafe { x::Atom::new(data[2]) };
 
                 trace!("_NET_WM_STATE ({action:?}) props: {prop1:?} {prop2:?}");
-                println!("_NET_WM_STATE ({action:?}) props: {prop1:?} {prop2:?}");
                 
                 //🤡
                 match prop1{
@@ -599,7 +598,7 @@ impl XState {
                         "Attempted move/resize of {:?} with non left click button ({button})",
                         e.window()
                     );
-                    return;
+                    //return;
                 }
 
                 match direction {
