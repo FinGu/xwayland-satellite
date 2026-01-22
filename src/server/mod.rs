@@ -1157,7 +1157,7 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
             return;
         };
 
-        let SurfaceRole::Toplevel(Some(ref toplevel)) = &*role else {
+        let SurfaceRole::Toplevel(Some(toplevel)) = &*role else {
             warn!("Tried to set an unmapped toplevel or non toplevel maximized: {window:?}");
             return;
         };
@@ -1181,7 +1181,7 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
             return;
         };
 
-        let SurfaceRole::Toplevel(Some(ref toplevel)) = &*role else {
+        let SurfaceRole::Toplevel(Some(toplevel)) = &*role else {
             warn!("Tried to set an unmapped toplevel or non toplevel minimized: {window:?}");
             return;
         };
