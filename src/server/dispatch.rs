@@ -1294,16 +1294,21 @@ impl<S: X11Selection>
                 point_hi,
                 point_lo,
             } => {
-                let c_timeline: &c_sync::wp_linux_drm_syncobj_timeline_v1::WpLinuxDrmSyncobjTimelineV1 = timeline.data().unwrap();
-                client.set_acquire_point(c_timeline, point_hi, point_lo);
+                let c_timeline = timeline.data();
+
+                if let Some(timeline) = c_timeline{
+                    client.set_acquire_point(timeline, point_hi, point_lo);
+                }
             }
             Request::SetReleasePoint {
                 timeline,
                 point_hi,
                 point_lo,
             } => {
-                let c_timeline: &c_sync::wp_linux_drm_syncobj_timeline_v1::WpLinuxDrmSyncobjTimelineV1 = timeline.data().unwrap();
-                client.set_release_point(c_timeline, point_hi, point_lo);
+                let c_timeline = timeline.data();
+                if let Some(timeline) = c_timeline{
+                    client.set_release_point(timeline, point_hi, point_lo);
+                }
             }
             Request::Destroy => client.destroy(),
             other => warn!("unhandled drm syncobj surface request: {other:?}"),
