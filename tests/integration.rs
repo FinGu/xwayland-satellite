@@ -319,7 +319,7 @@ impl Fixture {
     fn create_output(&mut self, x: i32, y: i32) -> wayland_server::protocol::wl_output::WlOutput {
         self.testwl.new_output(x, y);
         self.wait_and_dispatch();
-        self.testwl.last_created_output()
+        self.testwl.finalize_output()
     }
 }
 
@@ -345,6 +345,7 @@ xcb::atoms_struct! {
         win_type_tooltip => b"_NET_WM_WINDOW_TYPE_TOOLTIP",
         win_type_utility => b"_NET_WM_WINDOW_TYPE_UTILITY",
         win_type_dnd => b"_NET_WM_WINDOW_TYPE_DND",
+        win_type_combo => b"_NET_WM_WINDOW_TYPE_COMBO",
         motif_wm_hints => b"_MOTIF_WM_HINTS" only_if_exists = false,
         wm_hints => b"WM_HINTS",
         mime1 => b"text/plain" only_if_exists = false,
@@ -2057,6 +2058,15 @@ fn popup_heuristics() {
     );
     f.map_as_popup(&mut connection, wechat_popup);
 
+    let fcitx5_popup = connection.new_window(connection.root, 10, 10, 50, 50, true);
+    connection.set_property(
+        fcitx5_popup,
+        x::ATOM_ATOM,
+        connection.atoms.win_type,
+        &[connection.atoms.win_type_combo],
+    );
+    f.map_as_popup(&mut connection, fcitx5_popup);
+
     let godot_popup = connection.new_window(connection.root, 10, 10, 50, 50, true);
     connection.set_property(
         godot_popup,
@@ -2223,7 +2233,7 @@ fn xsettings_fractional_scale() {
     let mut connection = Connection::new(&f.display);
     f.testwl.enable_xdg_output_manager();
 
-    let output = f.testwl.last_created_output();
+    let output = f.testwl.finalize_output();
 
     let window = connection.new_window(connection.root, 0, 0, 20, 20, false);
     let surface = f.map_as_toplevel(&mut connection, window);
