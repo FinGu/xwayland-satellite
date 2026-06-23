@@ -100,6 +100,8 @@ where
 #[derive(Default, Debug)]
 struct WindowAttributes {
     is_popup: bool,
+    acquire_input_via_wm: bool,
+    has_take_focus: bool,
     dims: WindowDims,
     size_hints: Option<WmNormalHints>,
     title: Option<WmName>,
@@ -107,6 +109,13 @@ struct WindowAttributes {
     group: Option<x::Window>,
     decorations: Option<Decorations>,
     transient_for: Option<x::Window>,
+}
+
+impl WindowAttributes {
+    /// AKA "Passive" input model
+    fn require_wm_focus(&self) -> bool {
+        self.acquire_input_via_wm && !self.has_take_focus
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
@@ -386,6 +395,7 @@ pub(super) struct GlobalName(pub u32);
 struct FocusData {
     window: x::Window,
     output_name: Option<String>,
+    is_popup: bool,
 }
 
 #[derive(Copy, Clone, Default)]
@@ -726,11 +736,17 @@ impl<C: XConnection> ServerState<C> {
             if let Some(FocusData {
                 window,
                 output_name,
+                is_popup,
             }) = self.to_focus.take()
             {
-                debug!("focusing window {window:?}");
+                debug!(
+                    "focusing {} {window:?}",
+                    if is_popup { "popup" } else { "window" }
+                );
                 self.connection.focus_window(window, output_name);
-                self.last_focused_toplevel = Some(window);
+                if !is_popup {
+                    self.last_focused_toplevel = Some(window);
+                }
             } else if self.unfocus {
                 self.connection.focus_window(x::WINDOW_NONE, None);
             }
@@ -950,7 +966,19 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
             return;
         };
 
-        self.world.get::<&mut WindowData>(id).unwrap().attrs.group = hints.window_group;
+        let attrs = &mut self.world.get::<&mut WindowData>(id).unwrap().attrs;
+        attrs.group = hints.window_group;
+        attrs.acquire_input_via_wm = hints.acquire_input_via_wm;
+    }
+
+    pub fn set_take_focus(&mut self, window: x::Window, has_take_focus: bool) {
+        let Some(id) = self.windows.get(&window).copied() else {
+            debug!("not setting hints for unknown window {window:?}");
+            return;
+        };
+
+        let attrs = &mut self.world.get::<&mut WindowData>(id).unwrap().attrs;
+        attrs.has_take_focus = has_take_focus;
     }
 
     pub fn set_size_hints(&mut self, window: x::Window, hints: WmNormalHints) {
@@ -1147,6 +1175,12 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
         if let Ok(mut role) = self.world.remove_one::<SurfaceRole>(entity.unwrap()) {
             role.destroy();
         }
+    }
+
+    /// Returns the window to restore focus to when the active window is unmapped.
+    /// If a toplevel was previously focused, returns it; otherwise returns `WINDOW_NONE`.
+    pub fn focus_restore_target(&self) -> x::Window {
+        self.last_focused_toplevel.unwrap_or(x::WINDOW_NONE)
     }
 
     pub fn set_fullscreen(&mut self, window: x::Window, state: super::xstate::SetState) {
@@ -1400,7 +1434,8 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
         }
     }
 
-    /// Returns true if the created window is a toplevel.
+    /// Creates the appropriate xdg role (toplevel or popup) for the given window.
+    /// Returns `true` if the created window is a toplevel.
     fn create_role_window(&mut self, window: x::Window, entity: Entity) -> bool {
         let xdg_surface;
         let mut popup_for = None;
