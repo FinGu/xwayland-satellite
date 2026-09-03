@@ -419,28 +419,16 @@ impl SurfaceEvents {
                     "popup configure {}: {x}x{y}, {width}x{height}",
                     data.get::<&WlSurface>().unwrap().id()
                 );
-
-                let mut role = data.get::<&mut SurfaceRole>().unwrap();
-                let xdg = role.xdg_mut().unwrap();
-                let first_configure = !xdg.configured;
-                xdg.pending = Some(PendingSurfaceState {
+                data.get::<&mut SurfaceRole>()
+                    .unwrap()
+                    .xdg_mut()
+                    .unwrap()
+                    .pending = Some(PendingSurfaceState {
                     x,
                     y,
                     width,
                     height,
                 });
-
-                if first_configure {
-                    let window_data = data.get::<&WindowData>().unwrap();
-                    if window_data.attrs.require_wm_focus() {
-                        let window = *data.get::<&x::Window>().unwrap();
-                        state.inner.to_focus = Some(FocusData {
-                            window,
-                            output_name: None,
-                            is_popup: true,
-                        });
-                    }
-                }
             }
             xdg_popup::Event::Repositioned { .. } => {}
             xdg_popup::Event::PopupDone => {
@@ -698,7 +686,6 @@ impl Event for client::wl_pointer::Event {
                     decoration::handle_pointer_leave(state, parent);
                     return;
                 }
-
                 if let Some(surface) = surface
                     .data()
                     .copied()
@@ -867,7 +854,6 @@ impl Event for client::wl_keyboard::Event {
                 state.to_focus = Some(FocusData {
                     window: *window,
                     output_name,
-                    is_popup: false,
                 });
                 keyboard.enter(serial, surface, keys);
             }

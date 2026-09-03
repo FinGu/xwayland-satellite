@@ -442,8 +442,10 @@ impl XState {
 
                     let active_win: &[x::Window] = active_win.value();
                     if active_win[0] == e.window() {
-                        let restore_to = server_state.focus_restore_target();
-                        server_state.connection.focus_window(restore_to, None);
+                        // The connection on the server state stores state.
+                        server_state
+                            .connection
+                            .focus_window(x::Window::none(), None);
                     }
 
                     unwrap_or_skip_bad_window_cont!(self.connection.send_and_check_request(
@@ -660,11 +662,6 @@ impl XState {
         let motif_wm_hints = self.get_motif_wm_hints(window)?;
         if let Some(decorations) = motif_wm_hints.as_ref().and_then(|m| m.decorations) {
             server_state.set_win_decorations(window, decorations);
-        }
-
-        let wm_hints = self.get_wm_hints(window)?;
-        if let Some(hints) = wm_hints {
-            server_state.set_win_hints(window, hints);
         }
 
         let transient_for = self.get_transient_for(window)?;
@@ -1027,7 +1024,7 @@ impl From<&[u32]> for WmNormalHints {
     }
 }
 
-#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct WmHints {
     pub window_group: Option<x::Window>,
     pub acquire_input_via_wm: bool,
