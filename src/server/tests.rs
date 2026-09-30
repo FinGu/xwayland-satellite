@@ -160,6 +160,7 @@ struct WindowData {
 #[derive(Default)]
 struct FakeXConnection {
     focused_window: Option<Window>,
+    send_take_focus_window: Option<Window>,
     windows: HashMap<Window, WindowData>,
     set_window_dims_counter: usize,
 }
@@ -232,6 +233,15 @@ impl super::XConnection for FakeXConnection {
             "Unknown window: {window:?}"
         );
         self.focused_window = window.into();
+    }
+
+    #[track_caller]
+    fn send_take_focus(&mut self, window: x::Window) {
+        assert!(
+            self.windows.contains_key(&window),
+            "Unknown window: {window:?}"
+        );
+        self.send_take_focus_window = window.into();
     }
 
     fn raise_to_top(&mut self, window: Window) {
@@ -819,8 +829,8 @@ impl TestFixture<FakeXConnection> {
                 assert_eq!(
                     pos.size.as_ref().unwrap(),
                     &testwl::Vec2 {
-                        x: (dims.width as f64 / scale) as i32,
-                        y: (dims.height as f64 / scale) as i32
+                        x: (dims.width as f64 / scale).ceil() as i32,
+                        y: (dims.height as f64 / scale).ceil() as i32
                     }
                 );
 
@@ -829,8 +839,8 @@ impl TestFixture<FakeXConnection> {
                     pos.anchor_rect.as_ref().unwrap(),
                     &testwl::Rect {
                         size: testwl::Vec2 {
-                            x: (parent_win.dims.width as f64 / scale) as i32,
-                            y: (parent_win.dims.height as f64 / scale) as i32
+                            x: (parent_win.dims.width as f64 / scale).ceil() as i32,
+                            y: (parent_win.dims.height as f64 / scale).ceil() as i32
                         },
                         offset: testwl::Vec2::default()
                     }
@@ -856,6 +866,55 @@ impl TestFixture<FakeXConnection> {
         }
 
         (surface, popup_id)
+    }
+
+    #[track_caller]
+    fn setup_popup_focus_case(
+        &mut self,
+        comp: &Compositor,
+        override_redirect: bool,
+        accepts_input: bool,
+        take_focus: bool,
+    ) -> (Window, Window) {
+        let win_toplevel = Window::new(1);
+        self.create_toplevel(comp, win_toplevel);
+
+        let win_popup = Window::new(2);
+        let (buffer, surface) = comp.create_surface();
+        let data = WindowData {
+            mapped: true,
+            dims: WindowDims {
+                x: 10,
+                y: 20,
+                width: 100,
+                height: 50,
+            },
+            fullscreen: false,
+        };
+        self.new_window(win_popup, override_redirect, data);
+        if !override_redirect {
+            self.satellite
+                .set_window_role(win_popup, crate::xstate::WindowRole::Popup);
+        }
+
+        self.satellite.set_win_hints(
+            win_popup,
+            super::WmHints {
+                window_group: None,
+                accepts_input,
+            },
+        );
+        if take_focus {
+            self.satellite.set_take_focus(win_popup, true);
+        }
+        self.map_window(comp, win_popup, &surface.obj, &buffer);
+        self.run();
+
+        let popup_id = self.check_new_surface();
+        self.testwl.configure_popup(popup_id);
+        self.run();
+
+        (win_toplevel, win_popup)
     }
 
     #[track_caller]
@@ -1342,7 +1401,7 @@ fn window_group_properties() {
         win,
         super::WmHints {
             window_group: Some(prop_win),
-            acquire_input_via_wm: false,
+            accepts_input: false,
         },
     );
     f.satellite.map_window(win);
@@ -1647,103 +1706,51 @@ fn override_redirect_choose_hover_window() {
 }
 
 #[test]
-fn popup_no_focus_without_input_hint() {
-    let (mut f, comp) = TestFixture::new_with_compositor();
+fn popup_override_redirect_never_focused_nor_offered() {
+    for accepts_input in [true, false] {
+        for take_focus in [false, true] {
+            let (mut f, comp) = TestFixture::new_with_compositor();
 
-    let win_toplevel = Window::new(1);
-    let (_, toplevel_id) = f.create_toplevel(&comp, win_toplevel);
+            let (win_toplevel, _) =
+                f.setup_popup_focus_case(&comp, true, accepts_input, take_focus);
+            assert_eq!(
+                f.connection().focused_window,
+                Some(win_toplevel),
+                "accepts_input={accepts_input:?} take_focus={take_focus}"
+            );
+            assert_eq!(
+                f.connection().send_take_focus_window,
+                None,
+                "accepts_input={accepts_input:?} take_focus={take_focus}"
+            );
+        }
+    }
+}
 
-    // A popup without acquire_input_via_wm should not receive focus.
-    let win_popup = Window::new(2);
-    f.create_popup(
-        &comp,
-        PopupBuilder::new(win_popup, win_toplevel, toplevel_id),
-    );
-    assert_eq!(f.connection().focused_window, Some(win_toplevel));
+#[test]
+fn popup_send_take_focus_when_advertised() {
+    for accepts_input in [true, false] {
+        let (mut f, comp) = TestFixture::new_with_compositor();
+
+        let (win_toplevel, win_popup) = f.setup_popup_focus_case(&comp, false, accepts_input, true);
+        assert_eq!(f.connection().focused_window, Some(win_toplevel));
+        assert_eq!(f.connection().send_take_focus_window, Some(win_popup));
+    }
 }
 
 #[test]
 fn popup_focus_on_map_with_input_hint() {
     let (mut f, comp) = TestFixture::new_with_compositor();
 
-    let win_toplevel = Window::new(1);
-    let (_, toplevel_id) = f.create_toplevel(&comp, win_toplevel);
-
-    // A popup with acquire_input_via_wm should receive X11 keyboard focus
-    // at map time, matching what a real X11 WM does for windows with
-    // WM_HINTS input=True.
-    let win_popup = Window::new(2);
-    let (buffer, surface) = comp.create_surface();
-    let dims = WindowDims {
-        x: 10,
-        y: 20,
-        width: 100,
-        height: 50,
-    };
-    let data = WindowData {
-        mapped: true,
-        dims,
-        fullscreen: false,
-    };
-    f.new_window(win_popup, true, data);
-    f.satellite.set_win_hints(
-        win_popup,
-        super::WmHints {
-            window_group: None,
-            acquire_input_via_wm: true,
-        },
-    );
-    f.map_window(&comp, win_popup, &surface.obj, &buffer);
-    f.run();
-
-    let popup_id = f.check_new_surface();
-    assert_ne!(popup_id, toplevel_id);
-
-    f.testwl.configure_popup(popup_id);
-    f.run();
-
-    // Focus should have been given directly to the popup at map time.
+    let (_, win_popup) = f.setup_popup_focus_case(&comp, false, true, false);
     assert_eq!(f.connection().focused_window, Some(win_popup));
 }
 
 #[test]
-fn popup_no_focus_input_hint_wm_take_focus() {
+fn popup_no_focus_without_input_hint() {
     let (mut f, comp) = TestFixture::new_with_compositor();
 
-    let win_toplevel = Window::new(1);
-    let (_, toplevel_id) = f.create_toplevel(&comp, win_toplevel);
-
-    let win_popup = Window::new(2);
-    let (buffer, surface) = comp.create_surface();
-    let dims = WindowDims {
-        x: 10,
-        y: 20,
-        width: 100,
-        height: 50,
-    };
-    let data = WindowData {
-        mapped: true,
-        dims,
-        fullscreen: false,
-    };
-    f.new_window(win_popup, true, data);
-    f.satellite.set_win_hints(
-        win_popup,
-        super::WmHints {
-            window_group: None,
-            acquire_input_via_wm: true,
-        },
-    );
-    f.satellite.set_take_focus(win_popup, true);
-    f.map_window(&comp, win_popup, &surface.obj, &buffer);
-    f.run();
-
-    let popup_id = f.check_new_surface();
-    assert_ne!(popup_id, toplevel_id);
-
-    f.testwl.configure_popup(popup_id);
-    f.run();
-
+    let (win_toplevel, _) = f.setup_popup_focus_case(&comp, false, false, false);
     assert_eq!(f.connection().focused_window, Some(win_toplevel));
 }
 
@@ -2480,8 +2487,8 @@ fn fractional_scale_popup() {
     let builder = PopupBuilder::new(popup, toplevel, toplevel_id)
         .x(60)
         .y(60)
-        .width(60)
-        .height(60)
+        .width(61)
+        .height(61)
         .scale(1.5);
     let initial_dims = builder.dims;
     f.create_popup(&comp, builder);
@@ -2553,6 +2560,18 @@ fn fractional_scale_small_popup() {
         assert_eq!(viewport.height, 67);
     }
 
+    f.reconfigure_window(
+        toplevel,
+        WindowDims {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        },
+        false,
+    );
+    f.run();
+
     let popup = Window::new(2);
     let builder = PopupBuilder::new(popup, toplevel, toplevel_id)
         .width(1)
@@ -2570,6 +2589,10 @@ fn fractional_scale_small_popup() {
         .expect("Missing popup data");
     let pos = &data.popup().positioner_state;
     assert_eq!(pos.size.unwrap(), testwl::Vec2 { x: 1, y: 1 });
+    assert_eq!(
+        pos.anchor_rect.as_ref().unwrap().size,
+        testwl::Vec2 { x: 1, y: 1 }
+    );
 
     let dims = WindowDims {
         x: 0,
@@ -2578,7 +2601,6 @@ fn fractional_scale_small_popup() {
         height: 1,
     };
     f.reconfigure_window(popup, dims, true);
-    f.run();
     f.run();
 
     let dims = f.connection().window(popup).dims;
@@ -2590,7 +2612,7 @@ fn fractional_scale_small_popup() {
         .get_surface_data(popup_id)
         .expect("Missing popup data");
     let pos = &data.popup().positioner_state;
-    assert_eq!(pos.size.unwrap(), testwl::Vec2 { x: 1, y: 1 });
+    assert_eq!(pos.size.unwrap(), testwl::Vec2 { x: 2, y: 1 });
 }
 
 #[test]
@@ -3073,6 +3095,25 @@ fn disconnected_output_rescaling() {
     assert_eq!(f.satellite.inner.new_scale, Some(2.0));
 }
 
+#[track_caller]
+fn check_window_and_viewport_size(
+    f: &TestFixture<FakeXConnection>,
+    window: Window,
+    id: testwl::SurfaceId,
+    width: u16,
+    height: u16,
+) {
+    let dims = f.connection().window(window).dims;
+    assert_eq!((dims.width, dims.height), (width, height), "X window size");
+    let data = f.testwl.get_surface_data(id).unwrap();
+    let viewport = data.viewport.as_ref().unwrap();
+    assert_eq!(
+        (viewport.width, viewport.height),
+        (width as i32, height as i32),
+        "viewport size"
+    );
+}
+
 #[test]
 fn client_side_decorations() {
     let (mut f, compositor) = TestFixture::new_with_compositor();
@@ -3083,10 +3124,7 @@ fn client_side_decorations() {
     f.testwl.configure_toplevel(id, 100, 100, vec![]);
     f.run();
 
-    let data = f.testwl.get_surface_data(id).unwrap();
-    let viewport = data.viewport.as_ref().unwrap();
-    assert_eq!(viewport.width, 100);
-    assert_eq!(viewport.height, 75);
+    check_window_and_viewport_size(&f, window, id, 100, 75);
 
     let subsurface_id = f.testwl.last_created_surface_id().unwrap();
     assert_ne!(subsurface_id, id);
@@ -3102,10 +3140,7 @@ fn client_side_decorations() {
     f.testwl
         .configure_toplevel(id, 100, 100, vec![xdg_toplevel::State::Fullscreen]);
     f.run();
-    let data = f.testwl.get_surface_data(id).unwrap();
-    let viewport = data.viewport.as_ref().unwrap();
-    assert_eq!(viewport.width, 100);
-    assert_eq!(viewport.height, 100);
+    check_window_and_viewport_size(&f, window, id, 100, 100);
 
     let data = f.testwl.get_surface_data(subsurface_id).unwrap();
     assert!(data.buffer.is_none());
@@ -3122,12 +3157,55 @@ fn client_side_decorations() {
     f.testwl.configure_toplevel(id, 100, 100, vec![]);
     f.run();
 
-    let data = f.testwl.get_surface_data(id).unwrap();
-    let viewport = data.viewport.as_ref().unwrap();
-    assert_eq!(viewport.width, 100);
-    assert_eq!(viewport.height, 100);
+    check_window_and_viewport_size(&f, window, id, 100, 100);
     assert!(f.testwl.get_surface_data(subsurface_id).is_none());
     assert!(!subsurface.is_alive());
+}
+
+#[test]
+fn client_side_decorations_fractional_scale() {
+    use super::decoration::DecorationsDataSatellite;
+
+    let mut f = TestFixture::new_pre_connect(|testwl| {
+        testwl.enable_fractional_scale();
+    });
+    let compositor = f.compositor();
+    let (_, output) = f.new_output(0, 0);
+    let window = Window::new(1);
+    let (_, id) = f.create_toplevel(&compositor, window);
+    f.testwl.move_surface_to_output(id, &output);
+    f.testwl
+        .force_decoration_mode(id, zxdg_toplevel_decoration_v1::Mode::ClientSide);
+    f.run();
+
+    let content_height = 100.0 - f64::from(DecorationsDataSatellite::TITLEBAR_HEIGHT);
+    let scales: [(f64, u32); 2] = [(1.5, 180), (1.25, 150)];
+    for (scale, preferred) in scales {
+        let data = f.testwl.get_surface_data(id).unwrap();
+        data.fractional
+            .as_ref()
+            .expect("Missing fractional scale")
+            .preferred_scale(preferred);
+        f.testwl.configure_toplevel(id, 100, 100, vec![]);
+        f.run();
+        f.run();
+
+        let x_width = (100.0 * scale).floor() as u16;
+        let x_height = (content_height * scale) as u16;
+        let dims = f.connection().window(window).dims;
+        assert_eq!(
+            (dims.width, dims.height),
+            (x_width, x_height),
+            "X window size at scale {scale}"
+        );
+        let data = f.testwl.get_surface_data(id).unwrap();
+        let viewport = data.viewport.as_ref().unwrap();
+        assert_eq!(
+            (viewport.width, viewport.height),
+            (100, content_height as i32),
+            "viewport size at scale {scale}"
+        );
+    }
 }
 
 #[test]
@@ -3189,10 +3267,7 @@ fn resize_decorations_on_reconfigure() {
     f.testwl.configure_toplevel(id, 100, 100, vec![]);
     f.run();
 
-    let data = f.testwl.get_surface_data(id).unwrap();
-    let viewport = data.viewport.as_ref().unwrap();
-    assert_eq!(viewport.width, 100);
-    assert_eq!(viewport.height, 75);
+    check_window_and_viewport_size(&f, window, id, 100, 75);
 
     let subsurface_id = f.testwl.last_created_surface_id().unwrap();
     assert_ne!(subsurface_id, id);
@@ -3211,10 +3286,7 @@ fn resize_decorations_on_reconfigure() {
     // is used as a fallback in this case, do not reapply the height reduction from the titlebar.
     f.testwl.configure_toplevel(id, 0, 0, vec![]);
     f.run();
-    let data = f.testwl.get_surface_data(id).unwrap();
-    let viewport = data.viewport.as_ref().unwrap();
-    assert_eq!(viewport.width, 100);
-    assert_eq!(viewport.height, 75);
+    check_window_and_viewport_size(&f, window, id, 100, 75);
 
     let dims = WindowDims {
         x: 0,

@@ -204,12 +204,6 @@ impl Fixture {
         let mut pollfd = [self.pollfd.clone()];
         self.testwl.dispatch();
         let timeout = timespec_from_millis(50);
-        assert!(
-            poll(&mut pollfd, Some(&timeout)).unwrap() > 0,
-            "Did not receive any events"
-        );
-        self.pollfd.clear_revents();
-        self.testwl.dispatch();
 
         while poll(&mut pollfd, Some(&timeout)).unwrap() > 0 {
             self.testwl.dispatch();
@@ -381,6 +375,7 @@ xcb::atoms_struct! {
         incr => b"INCR",
         xsettings => b"_XSETTINGS_S0",
         xsettings_setting => b"_XSETTINGS_SETTINGS",
+        resource_manager => b"RESOURCE_MANAGER",
         moveresize => b"_NET_WM_MOVERESIZE",
     }
 }
@@ -701,6 +696,41 @@ impl Connection {
             data: settings,
         }
     }
+
+    fn get_resource_manager(&self) -> Vec<u8> {
+        self.get_reply(&x::GetProperty {
+            delete: false,
+            window: self.root,
+            property: self.atoms.resource_manager,
+            r#type: x::ATOM_STRING,
+            long_offset: 0,
+            long_length: u32::MAX,
+        })
+        .value()
+        .to_vec()
+    }
+}
+
+#[test]
+fn dispatch_already_queued_request() {
+    let mut f = Fixture::new();
+    let mut connection = Connection::new(&f.display);
+    let window = connection.new_window(connection.root, 0, 0, 20, 20, false);
+    let surface = f.map_as_toplevel(&mut connection, window);
+
+    connection.set_property(window, x::ATOM_STRING, x::ATOM_WM_NAME, b"queued");
+    let timeout = timespec_from_millis(1000);
+    assert!(poll(&mut [f.pollfd.clone()], Some(&timeout)).unwrap() > 0);
+    f.wait_and_dispatch();
+    assert_eq!(
+        f.testwl
+            .get_surface_data(surface)
+            .unwrap()
+            .toplevel()
+            .title
+            .as_deref(),
+        Some("queued")
+    );
 }
 
 #[test]
@@ -2176,6 +2206,46 @@ fn xsettings_fractional_scale() {
     assert_eq!(
         settings.data["Gdk/UnscaledDPI"].value,
         (2.5 / 2.0 * 96_f64 * 1024_f64).round() as i32
+    );
+}
+
+#[test]
+fn resource_manager_scale() {
+    let mut f = Fixture::new_preset(|testwl| {
+        testwl.enable_fractional_scale();
+    });
+    let mut connection = Connection::new(&f.display);
+    f.testwl.enable_xdg_output_manager();
+    let output = f.create_output(0, 0);
+
+    assert_eq!(connection.get_resource_manager(), b"Xft.dpi:\t96\n");
+    connection.set_property(
+        connection.root,
+        x::ATOM_STRING,
+        connection.atoms.resource_manager,
+        b"Xcursor.theme:\tAdwaita\nXft.dpi:\t96\n",
+    );
+
+    let window = connection.new_window(connection.root, 0, 0, 20, 20, false);
+    let surface = f.map_as_toplevel(&mut connection, window);
+    let data = f.testwl.get_surface_data(surface).unwrap();
+    let fractional = data.fractional.as_ref().unwrap();
+
+    fractional.preferred_scale(180); // 1.5 scale
+    f.testwl.move_surface_to_output(surface, &output);
+    f.wait_and_dispatch();
+    assert_eq!(
+        connection.get_resource_manager(),
+        b"Xcursor.theme:\tAdwaita\nXft.dpi:\t144\n"
+    );
+
+    let data = f.testwl.get_surface_data(surface).unwrap();
+    let fractional = data.fractional.as_ref().unwrap();
+    fractional.preferred_scale(300); // 2.5 scale
+    f.wait_and_dispatch();
+    assert_eq!(
+        connection.get_resource_manager(),
+        b"Xcursor.theme:\tAdwaita\nXft.dpi:\t240\n"
     );
 }
 

@@ -4,6 +4,7 @@ mod selection;
 use selection::{Selection, SelectionState};
 #[cfg(test)]
 mod tests;
+mod xresources;
 
 use crate::XConnection;
 use bitflags::bitflags;
@@ -669,6 +670,7 @@ impl XState {
 
         let transient_for = self.get_transient_for(window)?;
         let override_redirect = self.get_override_redirect(window)?;
+        server_state.set_override_redirect(window, override_redirect);
 
         let window_types = self
             .get_net_wm_window_types(window)?
@@ -937,6 +939,7 @@ xcb::atoms_struct! {
         incr => b"INCR" only_if_exists = false,
         xsettings => b"_XSETTINGS_S0" only_if_exists = false,
         xsettings_settings => b"_XSETTINGS_SETTINGS" only_if_exists = false,
+        resource_manager => b"RESOURCE_MANAGER" only_if_exists = false,
         primary => b"PRIMARY" only_if_exists = false,
         primary_targets => b"_primary_targets" only_if_exists = false,
         moveresize => b"_NET_WM_MOVERESIZE" only_if_exists = false,
@@ -1030,7 +1033,7 @@ impl From<&[u32]> for WmNormalHints {
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct WmHints {
     pub window_group: Option<x::Window>,
-    pub acquire_input_via_wm: bool,
+    pub accepts_input: bool,
 }
 
 impl From<&[u32]> for WmHints {
@@ -1042,8 +1045,11 @@ impl From<&[u32]> for WmHints {
             let window = x::Window::new(value[8]);
             ret.window_group = Some(window);
         }
-        if flags.contains(WmHintsFlags::Input) {
-            ret.acquire_input_via_wm = value[1] == 1;
+
+        // if input hint isn't present, set it to true anyways in case the client is misbehaving
+        ret.accepts_input = true;
+        if flags.contains(WmHintsFlags::Input) && value[1] == 0 {
+            ret.accepts_input = false;
         }
 
         ret
@@ -1209,7 +1215,9 @@ impl WindowRoleHeuristics {
             match ty {
                 x if x == window_atoms.normal => return WindowRole::Toplevel,
                 x if x == window_atoms.dialog => {
-                    return WindowRole::new_basic(self.has_transient_for && motif_no_decor);
+                    return WindowRole::new_basic(
+                        self.has_transient_for && motif_no_decor && forced_size,
+                    );
                 }
                 x if x == window_atoms.utility => {
                     return WindowRole::new_basic(motif_no_decor && forced_size);
@@ -1447,6 +1455,22 @@ impl XConnection for RealConnection {
                 });
             self.primary_output = Xid::none();
         }
+    }
+
+    fn send_take_focus(&mut self, window: x::Window) {
+        let resource_id = self.atoms.wm_take_focus.resource_id();
+        let data = [resource_id, x::CURRENT_TIME, 0, 0, 0];
+        let event = &x::ClientMessageEvent::new(
+            window,
+            self.atoms.wm_protocols,
+            x::ClientMessageData::Data32(data),
+        );
+        unwrap_or_skip_bad_window_ret!(self.connection.send_and_check_request(&x::SendEvent {
+            destination: x::SendEventDest::Window(window),
+            propagate: false,
+            event_mask: x::EventMask::empty(),
+            event,
+        }));
     }
 
     fn close_window(&mut self, window: x::Window) {
